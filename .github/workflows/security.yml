@@ -28,21 +28,39 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      # gitleaks/gitleaks-action now requires a paid org license (gitleaks.io) —
+      # this repo is under an org, so the Action refuses to run without
+      # GITLEAKS_LICENSE. Use the free OSS CLI directly instead: same detection
+      # engine, zero cost. Version+checksum from the gitleaks GitHub releases page.
+      - name: Install Gitleaks
+        run: |
+          curl -fsSL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          chmod +x gitleaks
+
       - name: Gitleaks
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENCE_KEY }}
-          GITLEAKS_CONFIG: .github/workflows/configuration/.gitleaks.toml
+        run: |
+          ./gitleaks detect \
+            --source . \
+            --config .github/workflows/configuration/.gitleaks.toml \
+            --report-format sarif \
+            --report-path gitleaks-results.sarif \
+            --redact \
+            --exit-code 1
+
+      - name: Upload Gitleaks SARIF
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+        if: always() && hashFiles('gitleaks-results.sarif') != ''
+        with:
+          sarif_file: gitleaks-results.sarif
+          category: gitleaks-secrets
 
   # -----------------------------------------
   # SAST — CodeQL (Python)
   # -----------------------------------------
   codeql:
     name: CodeQL - SAST
-    # Skips cleanly until actual Python source exists — this repo is pre-MVP
-    # scaffolding. Remove this guard once the SDK has real modules.
-    if: hashFiles('**/*.py') != ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -56,13 +74,20 @@ jobs:
         with:
           persist-credentials: false
 
+      # Skips cleanly until actual Python source exists — this repo is pre-MVP
+      # scaffolding. Remove this guard once the SDK has real modules. hashFiles()
+      # only works in step context, so the guard lives on each step below (a
+      # job-level `if: hashFiles(...)` is invalid and silently zeroes out the
+      # entire workflow — no jobs get scheduled at all).
       - name: Initialize CodeQL
+        if: hashFiles('**/*.py') != ''
         uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
         with:
           languages: python
           config-file: .github/codeql/config.yml
 
       - name: Perform CodeQL Analysis
+        if: hashFiles('**/*.py') != ''
         uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
 
   # -----------------------------------------
